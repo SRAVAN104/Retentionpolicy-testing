@@ -1,23 +1,27 @@
-
 trigger:
 - main
 - feature
 
 variables: 
 - group: Retention
-pool:
-  vmImage: windows-latest
 
-steps:
-- task: ArchiveFiles@2
-  inputs:
-    rootFolderOrFile: '$(build.sourcesDirectory)'
-    includeRootFolder: false
-- task: PublishBuildArtifacts@1
+stages:
+- stage: BuildAndArchive
+  displayName: Archive Build Artifacts
+  jobs:
+    - job: Archive
+      pool:
+        vmImage: windows-latest
+      steps:
+        - task: ArchiveFiles@2
+          inputs:
+            rootFolderOrFile: '$(build.sourcesDirectory)'
+            includeRootFolder: false
+        - task: PublishBuildArtifacts@1
 
 - stage: RetainBuild
   displayName: Retain Latest 10 Builds on Success for feature
-  condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'feature'))
+  condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'refs/heads/feature'))
   jobs:
     - job: RetainBuildJob
       displayName: Retain Latest 10 Builds
@@ -62,4 +66,3 @@ steps:
               }
 
               Write-Host "Retention lease applied to latest 10 successful builds from feature for 30 days."
-
