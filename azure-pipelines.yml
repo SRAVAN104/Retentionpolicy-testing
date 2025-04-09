@@ -14,3 +14,52 @@ steps:
     rootFolderOrFile: '$(build.sourcesDirectory)'
     includeRootFolder: false
 - task: PublishBuildArtifacts@1
+
+- stage: RetainBuild
+  displayName: Retain Latest 10 Builds on Success for feature/dev
+  condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'feature'))
+  jobs:
+    - job: RetainBuildJob
+      displayName: Retain Latest 10 Builds
+      pool:
+        vmImage: 'windows-latest'
+      steps:
+        - task: PowerShell@2
+          name: RetainLatestBuilds
+          displayName: Retain Latest 10 Builds
+          inputs:
+            failOnStderr: true
+            targetType: 'inline'
+            script: |
+              $ErrorActionPreference = "Stop"
+
+              # Auth setup using PAT
+              $pat = "$(PAT)"  # Make sure PAT is stored as a secret variable in the pipeline
+              $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
+              $headers = @{ Authorization = "Basic $base64AuthInfo" }
+
+              $project = "$(System.TeamProject)"
+              $orgUri = "$(System.CollectionUri)"
+              $uriBase = "$orgUri$project/_apis"
+
+              # Get latest 10 successful builds on feature/dev
+              $buildsUri = "$uriBase/build/builds?branchName=refs/heads/feature/dev&resultFilter=succeeded&queryOrder=finishTimeDescending&`$top=10&api-version=6.0-preview.1"
+              $response = Invoke-RestMethod -Uri $buildsUri -Headers $headers -Method Get
+
+              foreach ($build in $response.value) {
+                $leaseBody = @{
+                  definitionId           = $build.definition.id
+                  runId                  = $build.id
+                  daysValid              = 30
+                  protectPipeline        = $true
+                  protectPipelineMetadata = $true
+                  ownerId                = "User:$($build.requestedFor.id)"
+                } | ConvertTo-Json -Depth 10
+
+                $leaseUri = "$uriBase/build/retention/leases?api-version=6.0-preview.1"
+                Write-Host "Applying lease to build ID: $($build.id)"
+                Invoke-RestMethod -Uri $leaseUri -Method Post -Headers $headers -ContentType "application/json" -Body $leaseBody
+              }
+
+              Write-Host "Retention lease applied to latest 10 successful builds from feature/dev for 30 days."
+
