@@ -3,6 +3,8 @@ trigger:
 - main
 - feature
 
+variables: 
+- group: Retention
 pool:
   vmImage: windows-latest
 
