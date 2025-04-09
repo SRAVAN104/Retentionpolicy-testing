@@ -1,9 +1,11 @@
 trigger:
-- main
-- feature
+  branches:
+    include:
+      - main
+      - feature
 
-variables: 
-- group: Retention
+variables:
+  - group: Retention  # Ensure this contains a secret variable named PAT
 
 stages:
 - stage: BuildAndArchive
@@ -15,12 +17,81 @@ stages:
       steps:
         - task: ArchiveFiles@2
           inputs:
-            rootFolderOrFile: '$(build.sourcesDirectory)'
+            rootFolderOrFile: '$(Build.SourcesDirectory)'
             includeRootFolder: false
         - task: PublishBuildArtifacts@1
 
-  # Retention policy at stage level
-  retention:
-    days: 30
-    minimumToKeep: 10
-    keepForever: false
+- stage: RetainBuild
+  displayName: Retain & Cleanup Builds (feature/*)
+  condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'refs/heads/feature/'))
+  jobs:
+    - job: RetainBuildJob
+      displayName: Retain 10 Builds & Delete Old
+      pool:
+        vmImage: windows-latest
+      steps:
+        - task: PowerShell@2
+          name: RetainAndClean
+          displayName: Retain 10 Builds, Delete Older
+          inputs:
+            failOnStderr: true
+            targetType: 'inline'
+            script: |
+              $ErrorActionPreference = "Stop"
+
+              $pat = "$(PAT)"
+              $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
+              $headers = @{ Authorization = "Basic $base64AuthInfo" }
+
+              $project = "$(System.TeamProject)"
+              $orgUri = "$(System.CollectionUri)"
+              $uriBase = "$orgUri$project/_apis"
+
+              # 1. Get builds from last 30 days on feature/*
+              $cutoffDate = (Get-Date).AddDays(-30).ToString("o")
+              $allBuildsUri = "$uriBase/build/builds?branchName=$(Build.SourceBranch)&minFinishTime=$cutoffDate&queryOrder=finishTimeDescending&`$top=1000&api-version=6.0-preview.1"
+              $allBuilds = Invoke-RestMethod -Uri $allBuildsUri -Headers $headers -Method Get
+
+              if (-not $allBuilds.value) {
+                Write-Host "No builds found in the last 30 days for '$(Build.SourceBranch)'."
+                return
+              }
+
+              # 2. Retain latest 10 successful builds
+              $latestSuccessfulBuilds = $allBuilds.value | Where-Object { $_.result -eq "succeeded" } | Select-Object -First 10
+              $retainedIds = $latestSuccessfulBuilds | ForEach-Object { $_.id }
+
+              foreach ($build in $latestSuccessfulBuilds) {
+                $leaseBody = @{
+                  definitionId            = $build.definition.id
+                  runId                   = $build.id
+                  daysValid               = 30
+                  protectPipeline         = $true
+                  protectPipelineMetadata = $true
+                  ownerId                 = "User:$($build.requestedFor.id)"
+                } | ConvertTo-Json -Depth 10
+
+                $leaseUri = "$uriBase/build/retention/leases?api-version=6.0-preview.1"
+                Write-Host "🔒 Applying lease to build ID: $($build.id)"
+                Invoke-RestMethod -Uri $leaseUri -Method Post -Headers $headers -ContentType "application/json" -Body $leaseBody
+              }
+
+              # 3. Delete builds not retained
+              $toDelete = $allBuilds.value | Where-Object { $_.id -notin $retainedIds }
+
+              foreach ($build in $toDelete) {
+                if ($build.retainedByRelease -or $build.keepForever -eq $true) {
+                  Write-Host "⚠️ Skipping protected build ID: $($build.id)"
+                  continue
+                }
+
+                $deleteUri = "$uriBase/build/builds/$($build.id)?api-version=6.0-preview.1"
+                try {
+                  Write-Host "🗑️ Deleting build ID: $($build.id), result: $($build.result)"
+                  Invoke-RestMethod -Uri $deleteUri -Method Delete -Headers $headers
+                } catch {
+                  Write-Warning "❌ Failed to delete build ID: $($build.id). Error: $($_.Exception.Message)"
+                }
+              }
+
+              Write-Host "✅ Retention complete. Retained 10, deleted older builds."
