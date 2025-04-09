@@ -16,7 +16,7 @@ steps:
 - task: PublishBuildArtifacts@1
 
 - stage: RetainBuild
-  displayName: Retain Latest 10 Builds on Success for feature/dev
+  displayName: Retain Latest 10 Builds on Success for feature
   condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'feature'))
   jobs:
     - job: RetainBuildJob
@@ -34,7 +34,7 @@ steps:
               $ErrorActionPreference = "Stop"
 
               # Auth setup using PAT
-              $pat = "$(PAT)"  # Make sure PAT is stored as a secret variable in the pipeline
+              $pat = "$(PAT)"
               $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
               $headers = @{ Authorization = "Basic $base64AuthInfo" }
 
@@ -42,8 +42,8 @@ steps:
               $orgUri = "$(System.CollectionUri)"
               $uriBase = "$orgUri$project/_apis"
 
-              # Get latest 10 successful builds on feature/dev
-              $buildsUri = "$uriBase/build/builds?branchName=refs/heads/feature/dev&resultFilter=succeeded&queryOrder=finishTimeDescending&`$top=10&api-version=6.0-preview.1"
+              # Get latest 10 successful builds on feature
+              $buildsUri = "$uriBase/build/builds?branchName=refs/heads/feature&resultFilter=succeeded&queryOrder=finishTimeDescending&`$top=10&api-version=6.0-preview.1"
               $response = Invoke-RestMethod -Uri $buildsUri -Headers $headers -Method Get
 
               foreach ($build in $response.value) {
@@ -61,5 +61,5 @@ steps:
                 Invoke-RestMethod -Uri $leaseUri -Method Post -Headers $headers -ContentType "application/json" -Body $leaseBody
               }
 
-              Write-Host "Retention lease applied to latest 10 successful builds from feature/dev for 30 days."
+              Write-Host "Retention lease applied to latest 10 successful builds from feature for 30 days."
 
