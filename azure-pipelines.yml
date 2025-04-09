@@ -24,13 +24,13 @@ stages:
   condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'refs/heads/feature'))
   jobs:
     - job: RetainBuildJob
-      displayName: Retain Latest 10 Builds
+      displayName: Retain & Cleanup Builds
       pool:
         vmImage: 'windows-latest'
       steps:
         - task: PowerShell@2
           name: RetainLatestBuilds
-          displayName: Retain Latest 10 Builds
+          displayName: Retain Latest 10 Builds and Delete Old
           inputs:
             failOnStderr: true
             targetType: 'inline'
@@ -46,18 +46,24 @@ stages:
               $orgUri = "$(System.CollectionUri)"
               $uriBase = "$orgUri$project/_apis"
 
-              # Get latest 10 successful builds on feature
-              $buildsUri = "$uriBase/build/builds?branchName=refs/heads/feature&resultFilter=succeeded&queryOrder=finishTimeDescending&`$top=10&api-version=6.0-preview.1"
-              $response = Invoke-RestMethod -Uri $buildsUri -Headers $headers -Method Get
+              # Get all builds from last 30 days for 'feature/*' branch
+              $cutoffDate = (Get-Date).AddDays(-30).ToString("o")
+              $allBuildsUri = "$uriBase/build/builds?branchName=refs/heads/feature&minFinishTime=$cutoffDate&queryOrder=finishTimeDescending&`$top=1000&api-version=6.0-preview.1"
+              $allBuilds = Invoke-RestMethod -Uri $allBuildsUri -Headers $headers -Method Get
 
-              foreach ($build in $response.value) {
+              # Get the latest 10 successful builds
+              $latestSuccessfulBuilds = $allBuilds.value | Where-Object { $_.result -eq "succeeded" } | Select-Object -First 10
+              $retainedBuildIds = $latestSuccessfulBuilds | ForEach-Object { $_.id }
+
+              # Apply retention lease to those 10
+              foreach ($build in $latestSuccessfulBuilds) {
                 $leaseBody = @{
-                  definitionId           = $build.definition.id
-                  runId                  = $build.id
-                  daysValid              = 30
-                  protectPipeline        = $true
+                  definitionId            = $build.definition.id
+                  runId                   = $build.id
+                  daysValid               = 30
+                  protectPipeline         = $true
                   protectPipelineMetadata = $true
-                  ownerId                = "User:$($build.requestedFor.id)"
+                  ownerId                 = "User:$($build.requestedFor.id)"
                 } | ConvertTo-Json -Depth 10
 
                 $leaseUri = "$uriBase/build/retention/leases?api-version=6.0-preview.1"
@@ -65,4 +71,13 @@ stages:
                 Invoke-RestMethod -Uri $leaseUri -Method Post -Headers $headers -ContentType "application/json" -Body $leaseBody
               }
 
-              Write-Host "Retention lease applied to latest 10 successful builds from feature for 30 days."
+              # Delete builds older than these 10 (both success and failed)
+              $buildsToDelete = $allBuilds.value | Where-Object { $_.id -notin $retainedBuildIds }
+
+              foreach ($build in $buildsToDelete) {
+                $deleteUri = "$uriBase/build/builds/$($build.id)?api-version=6.0-preview.1"
+                Write-Host "Deleting old build ID: $($build.id), result: $($build.result)"
+                Invoke-RestMethod -Uri $deleteUri -Method Delete -Headers $headers
+              }
+
+              Write-Host "Retained 10 latest successful builds from the last 30 days. Deleted older builds (success and failed) from 'feature/*'."
