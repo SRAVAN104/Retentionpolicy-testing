@@ -63,7 +63,7 @@ stages:
                 $leaseBody = @{
                   definitionId            = $build.definition.id
                   runId                   = $build.id
-                  daysValid               = 30
+                  daysValid               = 0
                   protectPipeline         = $true
                   protectPipelineMetadata = $true
                   ownerId                 = "User:$($build.requestedFor.id)"
