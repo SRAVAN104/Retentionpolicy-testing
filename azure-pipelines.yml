@@ -23,7 +23,7 @@ stages:
 
 - stage: RetainBuild
   displayName: Retain & Cleanup Builds (feature/*)
-  condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'refs/heads/feature/'))
+  condition: and(succeeded(), not(canceled()), startsWith(variables['Build.SourceBranch'], 'feature'))
   jobs:
     - job: RetainBuildJob
       displayName: Retain 10 Builds & Delete Old
